@@ -5,6 +5,10 @@ import (
 	"os"
 )
 
+type PersistentLoadOptions struct {
+	IgnoreMissing bool
+}
+
 // Persistent extends OPIC with a disk-based persistency mechanism.
 type Persistent struct {
 	*Serialisable
@@ -23,9 +27,13 @@ func NewPersistent(filename string) *Persistent {
 
 // Load does what it sounds like. It loads the OPIC state from the file
 // associated with this instance.
-func (p *Persistent) Load() error {
+func (p *Persistent) Load(o *PersistentLoadOptions) error {
 	f, err := os.OpenFile(p.filename, os.O_RDONLY, 0644)
 	if err != nil {
+		if os.IsNotExist(err) && (o != nil && o.IgnoreMissing) {
+			return nil
+		}
+
 		return err
 	}
 	defer f.Close()
