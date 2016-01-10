@@ -101,7 +101,7 @@ func (s *Serialisable) ReadFrom(r io.Reader) (int64, error) {
 		}
 		n += 16
 
-		s.fetched[e.K] = time.Unix(e.V, 0)
+		s.cleared[e.K] = time.Unix(e.V, 0)
 	}
 
 	return n, nil
@@ -159,12 +159,12 @@ func (s *Serialisable) WriteTo(w io.Writer) (int64, error) {
 		n += 8
 	}
 
-	if err := binary.Write(w, binary.BigEndian, uint64(len(s.fetched))); err != nil {
+	if err := binary.Write(w, binary.BigEndian, uint64(len(s.cleared))); err != nil {
 		return n, err
 	}
 	n += 8
 
-	for k, v := range s.fetched {
+	for k, v := range s.cleared {
 		if err := binary.Write(w, binary.BigEndian, k); err != nil {
 			return n, err
 		}

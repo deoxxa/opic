@@ -16,9 +16,10 @@ func fnvHash(s string) uint64 {
 type OPIC struct {
 	m sync.RWMutex
 
-	dirty   bool
+	dirty bool
+
 	current map[uint64]float64
-	fetched map[uint64]time.Time
+	cleared map[uint64]time.Time
 	history map[uint64]float64
 }
 
@@ -26,26 +27,39 @@ type OPIC struct {
 func New() *OPIC {
 	return &OPIC{
 		current: make(map[uint64]float64),
-		fetched: make(map[uint64]time.Time),
+		cleared: make(map[uint64]time.Time),
 		history: make(map[uint64]float64),
 	}
 }
 
-// Initialise sets the total cash for the system, and distributes it evenly
-// amongst a collection of URLs.
-func (o *OPIC) Initialise(cash float64, in []string) {
+// InitialiseN sets the total cash for the system, and distributes it evenly
+// amongst a collection of URLs referenced by numeric hash.
+func (o *OPIC) InitialiseN(cash float64, in []uint64) {
 	o.m.Lock()
 	defer o.m.Unlock()
 
 	n := cash / float64(len(in))
 
-	for _, s := range in {
-		o.current[fnvHash(s)] = n
+	for _, u := range in {
+		o.current[u] = n
 	}
+
+	o.dirty = true
 }
 
-// Distribute distributes the cash from the input to the outputs,
-// and marks the input as having been
+// Initialise sets the total cash for the system, and distributes it evenly
+// amongst a collection of URLs.
+func (o *OPIC) Initialise(cash float64, in []string) {
+	ids := make([]uint64, len(in))
+	for i, s := range in {
+		ids[i] = fnvHash(s)
+	}
+
+	o.InitialiseN(cash, ids)
+}
+
+// Distribute distributes the cash from the input to the outputs, and marks
+// the input as having been fetched.
 func (o *OPIC) Distribute(source string, out []string, t time.Time) float64 {
 	o.m.Lock()
 	defer o.m.Unlock()
@@ -59,13 +73,16 @@ func (o *OPIC) Distribute(source string, out []string, t time.Time) float64 {
 	for _, s := range out {
 		outH := fnvHash(s)
 		o.current[outH] = o.current[outH] + c/float64(len(out)+1)
+		if _, ok := o.cleared[outH]; !ok {
+			o.cleared[outH] = time.Now()
+		}
 	}
 
 	d := o.current[0] / float64(len(o.current)+1)
 	o.current[0] = o.current[0] - d
 
 	o.current[sourceH] = d
-	o.fetched[sourceH] = t
+	o.cleared[sourceH] = t
 	o.history[sourceH] = c
 
 	o.dirty = true
@@ -83,6 +100,8 @@ func (o *OPIC) Finalise(in []string) {
 		o.history[inH] = o.current[inH]
 		o.current[inH] = 0
 	}
+
+	o.dirty = true
 }
 
 // GetN gets the details for an entry, referenced by numeric hash.
@@ -90,22 +109,31 @@ func (o *OPIC) GetN(v uint64) (float64, float64, time.Time) {
 	o.m.RLock()
 	defer o.m.RUnlock()
 
-	return o.history[v], o.current[v], o.fetched[v]
+	return o.history[v], o.current[v], o.cleared[v]
 }
 
 // EstimateN estimates the total for an entry, referenced by numeric hash.
-func (o *OPIC) EstimateN(v uint64) float64 {
-	v1, v2, _ := o.GetN(v)
-	return v1 + v2
+func (o *OPIC) EstimateN(v uint64, interval time.Duration, t time.Time) float64 {
+	h, c, vt := o.GetN(v)
+	d := t.Sub(vt)
+
+	var r float64
+	if d < interval {
+		r = h*(float64(interval)-float64(d))/float64(interval) + c
+	} else {
+		r = c * (float64(interval) / float64(d))
+	}
+
+	return r
 }
 
 // EstimateNV estimates the total for a list of entries, referenced by numeric
 // hash.
-func (o *OPIC) EstimateNV(v []uint64) []float64 {
+func (o *OPIC) EstimateNV(v []uint64, interval time.Duration, t time.Time) []float64 {
 	r := make([]float64, len(v))
 
 	for i, n := range v {
-		r[i] = o.EstimateN(n)
+		r[i] = o.EstimateN(n, interval, t)
 	}
 
 	return r
@@ -117,17 +145,16 @@ func (o *OPIC) Get(s string) (float64, float64, time.Time) {
 }
 
 // Estimate estimates the total for an entry.
-func (o *OPIC) Estimate(s string) float64 {
-	v1, v2, _ := o.Get(s)
-	return v1 + v2
+func (o *OPIC) Estimate(s string, interval time.Duration, t time.Time) float64 {
+	return o.EstimateN(fnvHash(s), interval, t)
 }
 
 // EstimateV estimates the totals for a list of entries.
-func (o *OPIC) EstimateV(v []string) []float64 {
+func (o *OPIC) EstimateV(v []string, interval time.Duration, t time.Time) []float64 {
 	r := make([]float64, len(v))
 
 	for i, n := range v {
-		r[i] = o.Estimate(n)
+		r[i] = o.Estimate(n, interval, t)
 	}
 
 	return r
@@ -147,6 +174,8 @@ func (o *OPIC) EnsureBalance(n float64) {
 	if (r1 + r2) < n {
 		o.current[0] = o.current[0] + (n - (r1 + r2))
 	}
+
+	o.dirty = true
 }
 
 // Virtual gets the details for the "virtual" entry.
